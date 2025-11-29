@@ -5,11 +5,13 @@ local offsetCoords = {x = 0.0, y = 0.0, z = 0.0}
 local precision = 1.0
 local speed = 1.0
 local currFilter = 1
-local currPrecisionIndex = 21
+local currPrecisionIndex = 17
 local playerControl = false
 local fixedCam = false
 local fixedEntity = 0
 local fixedOffsetX, fixedOffsetY, fixedOffsetZ = 0.0, 0.0, 0.0
+local fixedRotOffsetX, fixedRotOffsetY, fixedRotOffsetZ = 0.0, 0.0, 0.0
+local fixedCamFov = 0.0
 local camActive = false
 local dofOn = false
 local dofStrength = 0.5
@@ -147,27 +149,51 @@ local function processCamControls()
     DisableFirstPersonCamThisFrame()
 
     local camCoords = GetCamCoord(FREE_CAM)
-    if playerControl then
-        SetFocusArea(camCoords.x, camCoords.y, camCoords.z, 0.0, 0.0, 0.0)
-        SetCamCoord(FREE_CAM, camCoords.x, camCoords.y, camCoords.z)
-        SetCamRot(FREE_CAM, offsetRotX, offsetRotY, offsetRotZ, 2)
-    elseif fixedCam then
+    if fixedCam then
         if not DoesEntityExist(fixedEntity) then
             fixedCam = false
             fixedEntity = 0
         else
-            local fx, fy, fz = fixedOffsetX, fixedOffsetY, fixedOffsetZ
-            local forward, right, up, pos = GetEntityMatrix(fixedEntity)
-            local wx = pos.x + right.x * fx + forward.x * fy + up.x * fz
-            local wy = pos.y + right.y * fx + forward.y * fy + up.y * fz
-            local wz = pos.z + right.z * fx + forward.z * fy + up.z * fz
-            SetFocusArea(wx, wy, wz, 0.0, 0.0, 0.0)
-            SetCamCoord(FREE_CAM, wx, wy, wz)
-            SetCamRot(FREE_CAM, offsetRotX, offsetRotY, offsetRotZ, 2)
+            local world = GetOffsetFromEntityInWorldCoords(fixedEntity, fixedOffsetX, fixedOffsetY, fixedOffsetZ)
+            SetFocusArea(world.x, world.y, world.z, 0.0, 0.0, 0.0)
+            SetCamCoord(FREE_CAM, world.x, world.y, world.z)
+            if not playerControl then
+                offsetRotX = offsetRotX - (GetDisabledControlNormal(1, 2) * precision * 8.0)
+                offsetRotZ = offsetRotZ - (GetDisabledControlNormal(1, 1) * precision * 8.0)
+                if IsDisabledControlPressed(1, 44) then
+                    offsetRotY = offsetRotY - precision
+                elseif IsDisabledControlPressed(1, 38) then
+                    offsetRotY = offsetRotY + precision
+                end
+                if IsDisabledControlPressed(1, 21) then
+                    if IsDisabledControlPressed(1, 15) then
+                        speed = math.min(speed + 0.1, Config.MaxSpeed)
+                    elseif IsDisabledControlPressed(1, 14) then
+                        speed = math.max(speed - 0.1, Config.MinSpeed)
+                    end
+                else
+                    if IsDisabledControlPressed(1, 15) then
+                        setNewFov(-1.0)
+                    elseif IsDisabledControlPressed(1, 14) then
+                        setNewFov(1.0)
+                    end
+                end
+            end
+            offsetRotX = math.clamp(offsetRotX, -90.0, 90.0)
+            offsetRotY = math.clamp(offsetRotY, -90.0, 90.0)
+            offsetRotZ = offsetRotZ % 360.0
+            local er = GetEntityRotation(fixedEntity, 2)
+            SetCamRot(FREE_CAM, er.x + fixedRotOffsetX + offsetRotX, er.y + fixedRotOffsetY + offsetRotY, er.z + fixedRotOffsetZ + offsetRotZ, 2)
         end
-        for k, v in pairs(Config.DisabledControls) do
-            DisableControlAction(0, v, true)
+        if not playerControl then
+            for k, v in pairs(Config.DisabledControls) do
+                DisableControlAction(0, v, true)
+            end
         end
+    elseif playerControl then
+        SetFocusArea(camCoords.x, camCoords.y, camCoords.z, 0.0, 0.0, 0.0)
+        SetCamCoord(FREE_CAM, camCoords.x, camCoords.y, camCoords.z)
+        SetCamRot(FREE_CAM, offsetRotX, offsetRotY, offsetRotZ, 2)
     else
         local newPos = processNewPos(camCoords.x, camCoords.y, camCoords.z)
         SetFocusArea(newPos.x, newPos.y, newPos.z, 0.0, 0.0, 0.0)
@@ -180,9 +206,6 @@ local function processCamControls()
 
         local currentPos = GetEntityCoords(cache.ped)
         if #(currentPos - vec3(newPos.x, newPos.y, newPos.z)) > Config.MaxDistance then
-            if not IsEntityDead(cache.ped) then
-                lib.notify({ type = 'error', description = 'You went too far using the free camera.' })
-            end
             camActive = false
             lib.hideMenu()
         end
@@ -197,6 +220,8 @@ local function toggleCam()
     camActive = not camActive
     if camActive then
         ClearFocus()
+        local selPrec = tonumber(Config.PrecisionOptions[currPrecisionIndex])
+        if selPrec then precision = selPrec end
         FREE_CAM = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', GetEntityCoords(cache.ped), 0, 0, 0, GetGameplayCamFov() * 1.0)
         SetCamActive(FREE_CAM, true)
         RenderScriptCams(true, false, 0, true, false)
@@ -219,8 +244,16 @@ local function toggleCam()
 end
  
 local function camForward()
-    local rx = math.rad(offsetRotX)
-    local rz = math.rad(offsetRotZ)
+    local rx, rz
+    if DoesCamExist(FREE_CAM) then
+        local cr = GetCamRot(FREE_CAM, 2)
+        rx = math.rad(cr.x)
+        rz = math.rad(cr.z)
+    else
+        local gr = GetGameplayCamRot(2)
+        rx = math.rad(gr.x)
+        rz = math.rad(gr.z)
+    end
     local cx = -math.sin(rz) * math.cos(rx)
     local cy = math.cos(rz) * math.cos(rx)
     local cz = math.sin(rx)
@@ -228,8 +261,12 @@ local function camForward()
 end
 
 local function getCenterEntity()
-    if not DoesCamExist(FREE_CAM) then return 0 end
-    local origin = GetCamCoord(FREE_CAM)
+    local origin
+    if DoesCamExist(FREE_CAM) then
+        origin = GetCamCoord(FREE_CAM)
+    else
+        origin = GetGameplayCamCoord()
+    end
     local dir = camForward()
     local dest = origin + dir * 500.0
     local ray = StartShapeTestRay(origin.x, origin.y, origin.z, dest.x, dest.y, dest.z, -1, 0, 7)
@@ -263,28 +300,32 @@ local function toLocalOffset(ent, camPos)
 end
 
 RegisterCommand(Config.CommandName, function()
-    local targetName = 'None'
-    if DoesCamExist(FREE_CAM) then
-        targetName = entityLabel(getCenterEntity())
-    end
     lib.registerMenu({
         id = 'cinematic_cam_menu',
-        title = 'Cinematic Camera',
+        title = 'Câmera Cinematográfica',
         position = 'top-right',
         onSideScroll = function(selected, scrollIndex, args)
-            if selected == 2 then
-                SetTimecycleModifier(Config.Filters[scrollIndex])
+            if selected == 5 then
                 currFilter = scrollIndex
-            elseif selected == 6 then
-                dofNear = tonumber(Config.NearDof[scrollIndex])
-                SetCamNearDof(FREE_CAM, dofNear)
-            elseif selected == 7 then
-                dofFar = tonumber(Config.FarDof[scrollIndex])
-                SetCamFarDof(FREE_CAM, dofFar)
-            elseif selected == 8 then
-                dofStrength = tonumber(Config.StrengthDof[scrollIndex])
-                SetCamDofStrength(FREE_CAM, dofStrength)
+                if camActive and DoesCamExist(FREE_CAM) then
+                    SetTimecycleModifier(Config.Filters[scrollIndex])
+                end
             elseif selected == 9 then
+                if camActive and DoesCamExist(FREE_CAM) then
+                    dofNear = tonumber(Config.NearDof[scrollIndex])
+                    SetCamNearDof(FREE_CAM, dofNear)
+                end
+            elseif selected == 10 then
+                if camActive and DoesCamExist(FREE_CAM) then
+                    dofFar = tonumber(Config.FarDof[scrollIndex])
+                    SetCamFarDof(FREE_CAM, dofFar)
+                end
+            elseif selected == 11 then
+                if camActive and DoesCamExist(FREE_CAM) then
+                    dofStrength = tonumber(Config.StrengthDof[scrollIndex])
+                    SetCamDofStrength(FREE_CAM, dofStrength)
+                end
+            elseif selected == 2 then
                 currPrecisionIndex = scrollIndex
                 local newPrecision = tonumber(Config.PrecisionOptions[scrollIndex]) or 1.0
                 if camActive then
@@ -300,15 +341,15 @@ RegisterCommand(Config.CommandName, function()
                 else
                     SetNuiFocus(true, true)
                 end
-            elseif selected == 3 then
+            elseif selected == 6 then
                 toggleDof()
-            elseif selected == 4 then
+            elseif selected == 7 then
                 toggleBars()
-            elseif selected == 5 then
+            elseif selected == 8 then
                 toggleMap()
-            elseif selected == 10 then
+            elseif selected == 4 then
                 playerControl = checked
-            elseif selected == 11 then
+            elseif selected == 3 then
                 if checked then
                     if camActive and DoesCamExist(FREE_CAM) then
                         local ent = getCenterEntity()
@@ -319,6 +360,12 @@ RegisterCommand(Config.CommandName, function()
                             fixedOffsetX = type(offX) == 'number' and offX or 0.0
                             fixedOffsetY = type(offY) == 'number' and offY or 0.0
                             fixedOffsetZ = type(offZ) == 'number' and offZ or 0.0
+                            local cr = GetCamRot(FREE_CAM, 2)
+                            local er = GetEntityRotation(ent, 2)
+                            fixedRotOffsetX = cr.x - er.x
+                            fixedRotOffsetY = cr.y - er.y
+                            fixedRotOffsetZ = cr.z - er.z
+                            fixedCamFov = GetCamFov(FREE_CAM)
                             fixedCam = true
                             fixedEntity = ent
                         end
@@ -326,30 +373,64 @@ RegisterCommand(Config.CommandName, function()
                 else
                     fixedCam = false
                     fixedEntity = 0
+                    fixedOffsetX, fixedOffsetY, fixedOffsetZ = 0.0, 0.0, 0.0
+                    fixedRotOffsetX, fixedRotOffsetY, fixedRotOffsetZ = 0.0, 0.0, 0.0
+                    fixedCamFov = 0.0
                 end
             end
         end,
         options = {
-            {label = 'Toggle Camera', checked = camActive, icon = 'camera'},
-            {label = 'Camera Filters', values = Config.Filters, icon = 'camera', defaultIndex = currFilter, description = 'Use arrow keys to navigate filters. Hit enter to reset the filter to normal.'},
-            {label = 'Toggle Depth of Field', checked = dofOn, icon = 'eye', description = 'Toggle Depth of Field effect.'},
-            {label = 'Toggle Black Bars', checked = barsOn, icon = 'film', description = 'Toggle cinematic bars.'},
-            {label = 'Toggle Minimap', checked = not IsRadarHidden(), icon = 'map', description = 'Toggle the minimap.'},
-            {label = 'Depth of Field Near', values = Config.NearDof, icon = 'left-right', description = 'Adjust the near focus distance.'},
-            {label = 'Depth of Field Far', values = Config.FarDof, icon = 'left-right', description = 'Adjust the far focus distance.'},
-            {label = 'Depth of Field Strength', values = Config.StrengthDof, icon = 'left-right', description = 'Adjust the strength of the DoF effect.'},
-            {label = 'Precision', values = Config.PrecisionOptions, icon = 'gauge-high', defaultIndex = currPrecisionIndex, description = 'Adjust control precision multiplier.'},
-            {label = 'Player Control', checked = playerControl, icon = 'gamepad', description = 'Let the player move while camera stays fixed.'},
-            {label = ('Fix Camera ('..tostring(targetName)..')'), checked = fixedCam, icon = 'crosshairs', description = 'Fix camera to center target.'},
+            {label = 'Ativar/Desativar Câmera', checked = camActive, icon = 'camera'},
+            {label = 'Precisão', values = Config.PrecisionOptions, icon = 'gauge-high', defaultIndex = currPrecisionIndex, description = 'Ajustar multiplicador de precisão dos controles.'},
+            {label = 'Fixar Câmera', checked = fixedCam, icon = 'crosshairs', description = 'Fixar a câmera ao alvo no centro. Enter alterna.'},
+            {label = 'Controle do Jogador', checked = playerControl, icon = 'gamepad', description = 'Permitir mover o jogador enquanto a câmera fica fixa.'},
+            {label = 'Filtros de Câmera', values = Config.Filters, icon = 'camera', defaultIndex = currFilter, description = 'Use as setas para navegar. Enter reseta o filtro.'},
+            {label = 'Profundidade de Campo', checked = dofOn, icon = 'eye', description = 'Ativar/Desativar efeito de profundidade de campo.'},
+            {label = 'Barras Cinematográficas', checked = barsOn, icon = 'film', description = 'Ativar/Desativar barras pretas.'},
+            {label = 'Minimapa', checked = not IsRadarHidden(), icon = 'map', description = 'Ativar/Desativar minimapa.'},
+            {label = 'DoF Plano Próximo', values = Config.NearDof, icon = 'left-right', description = 'Ajustar distância de foco próximo.'},
+            {label = 'DoF Plano Distante', values = Config.FarDof, icon = 'left-right', description = 'Ajustar distância de foco distante.'},
+            {label = 'DoF Intensidade', values = Config.StrengthDof, icon = 'left-right', description = 'Ajustar intensidade do efeito.'},
         }
     }, function(selected, scrollIndex, args)
-        if selected == 2 then
-            ClearTimecycleModifier()
-            currFilter = 1
-        elseif selected == 11 then
+        if selected == 5 then
+            local input = lib.inputDialog('Buscar Filtro', {
+                {
+                    type = 'input',
+                    label = 'Nome do filtro',
+                    placeholder = 'Ex: night, noir, mineshaft',
+                }
+            }, { allowCancel = true, confirmLabel = 'Confirmar', cancelLabel = 'Cancelar' })
+            local query = input and input[1] and tostring(input[1]):lower()
+            local foundIndex = 1
+            if query and #query > 0 then
+                for i = 1, #Config.Filters do
+                    local name = tostring(Config.Filters[i]):lower()
+                    if string.find(name, query, 1, true) then
+                        foundIndex = i
+                        break
+                    end
+                end
+            end
+            if foundIndex == 1 then
+                if camActive and DoesCamExist(FREE_CAM) then
+                    ClearTimecycleModifier()
+                end
+                currFilter = 1
+            else
+                if camActive and DoesCamExist(FREE_CAM) then
+                    SetTimecycleModifier(Config.Filters[foundIndex])
+                    currFilter = foundIndex
+                end
+            end
+            lib.setNuiFocus(true, true)
+        elseif selected == 3 then
             if fixedCam then
                 fixedCam = false
                 fixedEntity = 0
+                fixedOffsetX, fixedOffsetY, fixedOffsetZ = 0.0, 0.0, 0.0
+                fixedRotOffsetX, fixedRotOffsetY, fixedRotOffsetZ = 0.0, 0.0, 0.0
+                fixedCamFov = 0.0
             else
                 if camActive and DoesCamExist(FREE_CAM) then
                     local ent = getCenterEntity()
@@ -360,6 +441,12 @@ RegisterCommand(Config.CommandName, function()
                         fixedOffsetX = type(offX) == 'number' and offX or 0.0
                         fixedOffsetY = type(offY) == 'number' and offY or 0.0
                         fixedOffsetZ = type(offZ) == 'number' and offZ or 0.0
+                        local cr = GetCamRot(FREE_CAM, 2)
+                        local er = GetEntityRotation(ent, 2)
+                        fixedRotOffsetX = cr.x - er.x
+                        fixedRotOffsetY = cr.y - er.y
+                        fixedRotOffsetZ = cr.z - er.z
+                        fixedCamFov = GetCamFov(FREE_CAM)
                         fixedCam = true
                         fixedEntity = ent
                     end
@@ -371,25 +458,7 @@ RegisterCommand(Config.CommandName, function()
         SetNuiFocus(true, true)
     end
     lib.showMenu('cinematic_cam_menu')
-    CreateThread(function()
-        local last = ''
-        while lib.getOpenMenu() == 'cinematic_cam_menu' do
-            local name = 'None'
-            if DoesCamExist(FREE_CAM) then
-                name = entityLabel(getCenterEntity())
-            end
-            if name ~= last then
-                lib.setMenuOptions('cinematic_cam_menu', {
-                    label = ('Fix Camera ('..tostring(name)..')'),
-                    checked = fixedCam,
-                    icon = 'crosshairs',
-                    description = 'Fix camera to center target.'
-                }, 11)
-                last = name
-            end
-            Wait(50)
-        end
-    end)
+    
 end)
 
 AddEventHandler('gameEventTriggered', function(event, data)
@@ -401,5 +470,10 @@ AddEventHandler('gameEventTriggered', function(event, data)
             resetEverything()
         end
     end
+end)
+
+RegisterCommand('ccamdebug', function()
+    lib.closeInputDialog()
+    lib.setNuiFocus(true, true)
 end)
  
